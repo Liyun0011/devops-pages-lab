@@ -1,0 +1,19 @@
+name: Update activity log
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours
+  workflow_dispatch:         # "Run workflow" button
+
+permissions:
+  contents: read             # the PAT (secrets.TOKEN) does the writing
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: TheDanniCraft/activity-log@v1
+        with:
+          GITHUB_USERNAME: Liyun0011
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
