@@ -1,0 +1,93 @@
+# Part 3 (Grade O): Gated deploy  build -> validate -> deploy -> smoke test
+# Use only after Settings -> Pages -> Source is switched to "GitHub Actions".
+name: Build, validate, deploy
+
+on:
+  push:
+    branches: [ main ]       # includes the activity-log bot's README commits
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      base_path: ${{ steps.pages.outputs.base_path }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version (commit SHA) into the site
+        run: echo "${GITHUB_SHA}" > version.txt
+      - id: pages
+        uses: actions/configure-pages@v5
+      - name: Build with Jekyll (include_relative still works)
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-build
+          path: _site/
+
+  validate:                  # THE GATE: deploy never runs if this fails
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-build
+          path: _site
+      - name: Gate checks (markers, HTML, internal links, version)
+        run: >
+          python3 scripts/check_site.py
+          --repo .
+          --site _site
+          --base-path "${{ needs.build.outputs.base_path }}"
+          --expect-version "${GITHUB_SHA}"
+      - name: Package validated site for Pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site/
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5
+
+  smoke-test:                # after deploy: live site must serve THIS commit
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check live version.txt and homepage
+        env:
+          URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          for i in $(seq 1 20); do
+            live=$(curl -fsS "${URL}version.txt?nocache=$(date +%s)" | tr -d '[:space:]' || true)
+            echo "try $i: live=${live:-<none>} expected=${GITHUB_SHA}"
+            if [ "$live" = "$GITHUB_SHA" ]; then
+              curl -fsS "${URL}?nocache=$(date +%s)" | grep -q "Recent activity" \
+                && { echo "Smoke test passed"; exit 0; }
+              echo "::error::Homepage is missing the 'Recent activity' section"; exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::Live site does not serve version ${GITHUB_SHA}"
+          exit 1
